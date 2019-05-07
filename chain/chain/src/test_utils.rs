@@ -8,7 +8,9 @@ use near_primitives::crypto::signer::{EDSigner, InMemorySigner};
 use near_primitives::hash::CryptoHash;
 use near_primitives::rpc::ABCIQueryResponse;
 use near_primitives::test_utils::get_public_key_from_seed;
-use near_primitives::transaction::{ReceiptTransaction, SignedTransaction, TransactionResult, TransactionStatus};
+use near_primitives::transaction::{
+    ReceiptTransaction, SignedTransaction, TransactionResult, TransactionStatus,
+};
 use near_primitives::types::{AccountId, BlockIndex, MerkleHash, ShardId};
 use near_store::test_utils::create_test_store;
 use near_store::{Store, StoreUpdate};
@@ -24,6 +26,7 @@ impl Block {
             prev,
             prev.height + 1,
             prev.prev_state_root,
+            vec![],
             vec![],
             HashMap::default(),
             signer,
@@ -101,7 +104,12 @@ impl RuntimeAdapter for KeyValueRuntime {
         0
     }
 
-    fn validate_tx(&self, _shard_id: ShardId, _state_root: MerkleHash, transaction: SignedTransaction) -> Result<ValidTransaction, Error> {
+    fn validate_tx(
+        &self,
+        _shard_id: ShardId,
+        _state_root: MerkleHash,
+        transaction: SignedTransaction,
+    ) -> Result<ValidTransaction, Error> {
         Ok(ValidTransaction { transaction })
     }
 
@@ -120,7 +128,7 @@ impl RuntimeAdapter for KeyValueRuntime {
                 status: TransactionStatus::Completed,
                 logs: vec![],
                 receipts: vec![],
-                result: None
+                result: None,
             });
         }
         Ok((self.store.store_update(), *state_root, tx_results, HashMap::default()))

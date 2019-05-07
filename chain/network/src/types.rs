@@ -10,6 +10,7 @@ use actix::{Actor, Addr, Message};
 use chrono::{DateTime, Utc};
 use protobuf::well_known_types::UInt32Value;
 use protobuf::{RepeatedField, SingularPtrField};
+use reed_solomon_erasure::Shard;
 use serde_derive::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 
@@ -17,6 +18,7 @@ use near_chain::{Block, BlockApproval, BlockHeader, Weight};
 use near_primitives::crypto::signature::{PublicKey, SecretKey, Signature};
 use near_primitives::hash::CryptoHash;
 use near_primitives::logging::pretty_str;
+use near_primitives::sharding::ShardChunkHeader;
 use near_primitives::traits::Base64Encoded;
 use near_primitives::transaction::SignedTransaction;
 use near_primitives::types::{AccountId, BlockIndex, MerkleHash, ShardId};
@@ -594,4 +596,33 @@ where
 
 impl Message for NetworkClientMessages {
     type Result = NetworkClientResponses;
+}
+
+pub struct ChunkHeaderMsg {
+    pub chunk_hash: CryptoHash,
+    pub header: ShardChunkHeader,
+}
+pub struct ChunkPartMsg {
+    pub chunk_hash: CryptoHash,
+    pub part_id: u64,
+    pub part: Shard,
+}
+
+pub struct ChunkHeaderAndPartMsg {
+    pub chunk_hash: CryptoHash,
+    pub header: ShardChunkHeader,
+    pub part_id: u64,
+    pub part: Box<[u8]>,
+}
+
+pub enum NetworkChunkMessages {
+    HeaderRequest(u64, u64, CryptoHash),
+    PartRequest(u64, u64, CryptoHash, u64),
+    Header(u64, ChunkHeaderMsg),
+    Part(u64, ChunkPartMsg),
+    HeaderAndPart(u64, ChunkHeaderAndPartMsg),
+}
+
+impl Message for NetworkChunkMessages {
+    type Result = ();
 }

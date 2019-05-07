@@ -2,7 +2,9 @@ use crate::crypto::group_signature::GroupSignature;
 use crate::hash::{hash_struct, CryptoHash};
 use crate::merkle::{merklize, MerklePath};
 use crate::types::MerkleHash;
+use near_protos::chain as chain_proto;
 use reed_solomon_erasure::{ReedSolomon, Shard};
+use std::convert::{TryFrom, TryInto};
 
 pub struct MainChainBlockHeader {
     pub prev_block_hash: CryptoHash,
@@ -19,11 +21,34 @@ pub struct MainChainLocalBlock {
     pub body: Option<MainChainBlockBody>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct ShardChunkHeader {
-    pub prev_block_hash: CryptoHash,
+    pub prev_chunk_hash: CryptoHash,
     pub encoded_merkle_root: CryptoHash,
     pub height: u64,
+}
+
+impl TryFrom<chain_proto::ShardChunkHeader> for ShardChunkHeader {
+    type Error = String;
+
+    fn try_from(proto: chain_proto::ShardChunkHeader) -> Result<Self, Self::Error> {
+        Ok(ShardChunkHeader {
+            prev_chunk_hash: proto.prev_chunk_hash.try_into()?,
+            encoded_merkle_root: proto.encoded_merkle_root.try_into()?,
+            height: proto.height,
+        })
+    }
+}
+
+impl From<ShardChunkHeader> for chain_proto::ShardChunkHeader {
+    fn from(header: ShardChunkHeader) -> Self {
+        chain_proto::ShardChunkHeader {
+            prev_chunk_hash: header.prev_chunk_hash.into(),
+            encoded_merkle_root: header.encoded_merkle_root.into(),
+            height: header.height,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Default, Serialize)]
@@ -76,7 +101,8 @@ impl EncodedShardChunk {
         let mut content = EncodedShardChunkBody { parts };
         content.reconstruct(data_shards, parity_shards);
         let (encoded_merkle_root, _) = content.get_merkle_hash_and_paths();
-        let header = ShardChunkHeader { prev_block_hash, encoded_merkle_root, height };
+        let header =
+            ShardChunkHeader { prev_chunk_hash: prev_block_hash, encoded_merkle_root, height };
 
         Self { header, content }
     }

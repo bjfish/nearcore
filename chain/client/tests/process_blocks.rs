@@ -92,6 +92,7 @@ fn receive_network_block() {
                 last_block.header.height + 1,
                 MerkleHash::default(),
                 vec![],
+                vec![],
                 HashMap::default(),
                 signer,
             );
@@ -139,6 +140,7 @@ fn receive_network_block_header() {
                 last_block.header.height + 1,
                 MerkleHash::default(),
                 vec![],
+                vec![],
                 HashMap::default(),
                 signer,
             );
@@ -178,6 +180,7 @@ fn produce_block_with_approvals() {
                 &last_block.header,
                 last_block.header.height + 1,
                 MerkleHash::default(),
+                vec![],
                 vec![],
                 HashMap::default(),
                 signer1,
@@ -226,6 +229,7 @@ fn invalid_blocks() {
                 last_block.header.height + 1,
                 hash(&[0]),
                 vec![],
+                vec![],
                 HashMap::default(),
                 signer.clone(),
             );
@@ -240,6 +244,7 @@ fn invalid_blocks() {
                 block.header.height + 1,
                 hash(&[1]),
                 vec![],
+                vec![],
                 HashMap::default(),
                 signer.clone(),
             );
@@ -249,6 +254,7 @@ fn invalid_blocks() {
                 &last_block.header,
                 last_block.header.height + 1,
                 MerkleHash::default(),
+                vec![],
                 vec![],
                 HashMap::default(),
                 signer,

@@ -17,7 +17,8 @@ use near_chain::{
     Block, BlockApproval, BlockHeader, BlockStatus, Chain, Provenance, RuntimeAdapter,
     ValidTransaction,
 };
-use near_network::types::{PeerId, ReasonForBan};
+use near_chunks::composer::Composer;
+use near_network::types::{NetworkChunkMessages, PeerId, ReasonForBan};
 use near_network::{
     NetworkClientMessages, NetworkClientResponses, NetworkRequests, NetworkResponses,
 };
@@ -25,7 +26,7 @@ use near_pool::TransactionPool;
 use near_primitives::crypto::signature::Signature;
 use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::SignedTransaction;
-use near_primitives::types::{AccountId, BlockIndex};
+use near_primitives::types::{AccountId, AuthorityId, BlockIndex};
 use near_store::Store;
 
 use crate::sync::{most_weight_peer, BlockSync, HeaderSync};
@@ -33,6 +34,7 @@ use crate::types::{
     BlockProducer, ClientConfig, Error, NetworkInfo, Status, StatusSyncInfo, SyncStatus,
 };
 use crate::{sync, StatusResponse};
+use near_chunks::orchestrator::RuntimeAdapterOrchestrator;
 
 pub struct ClientActor {
     config: ClientConfig,
@@ -40,6 +42,7 @@ pub struct ClientActor {
     chain: Chain,
     runtime_adapter: Arc<RuntimeAdapter>,
     tx_pool: TransactionPool,
+    composer: Composer<RuntimeAdapterOrchestrator>,
     network_actor: Recipient<NetworkRequests>,
     block_producer: Option<BlockProducer>,
     network_info: NetworkInfo,
@@ -70,6 +73,8 @@ impl ClientActor {
         // TODO: Wait until genesis.
         let chain = Chain::new(store, runtime_adapter.clone(), genesis_time)?;
         let tx_pool = TransactionPool::new();
+        let composer =
+            Composer::new(RuntimeAdapterOrchestrator { runtime_adapter: runtime_adapter.clone() });
         let sync_status = SyncStatus::AwaitingPeers;
         let header_sync = HeaderSync::new(network_actor.clone());
         let block_sync = BlockSync::new(network_actor.clone());
@@ -82,6 +87,7 @@ impl ClientActor {
             chain,
             runtime_adapter,
             tx_pool,
+            composer,
             network_actor,
             block_producer,
             network_info: NetworkInfo {
@@ -178,6 +184,66 @@ impl Handler<NetworkClientMessages> for ClientActor {
     }
 }
 
+impl Handler<NetworkChunkMessages> for ClientActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: NetworkChunkMessages, ctx: &mut Context<Self>) -> Self::Result {
+        let composer = &self.composer;
+        match msg {
+            NetworkChunkMessages::HeaderRequest(shard_id, to_whom, hash) => {
+                composer
+                    .connectors
+                    .get(&shard_id)
+                    .map(|x| {
+                        let _ =
+                            x.targeted_chunk_header_request_tx.send((to_whom as AuthorityId, hash));
+                    })
+                    .unwrap();
+            }
+            NetworkChunkMessages::PartRequest(shard_id, to_whom, hash, part_id) => {
+                composer
+                    .connectors
+                    .get(&shard_id)
+                    .map(|x| {
+                        let _ = x.targeted_chunk_part_request_tx.send((
+                            to_whom as AuthorityId,
+                            hash,
+                            part_id,
+                        ));
+                    })
+                    .unwrap();
+            }
+            NetworkChunkMessages::Header(shard_id, header_msg) => {
+                composer
+                    .connectors
+                    .get(&shard_id)
+                    .map(|x| {
+                        let _ = x.chunk_header_tx.send(header_msg);
+                    })
+                    .unwrap();
+            }
+            NetworkChunkMessages::Part(shard_id, part_msg) => {
+                composer
+                    .connectors
+                    .get(&shard_id)
+                    .map(|x| {
+                        let _ = x.chunk_part_tx.send(part_msg);
+                    })
+                    .unwrap();
+            }
+            NetworkChunkMessages::HeaderAndPart(shard_id, header_and_part_msg) => {
+                composer
+                    .connectors
+                    .get(&shard_id)
+                    .map(|x| {
+                        let _ = x.chunk_header_and_part_tx.send(header_and_part_msg);
+                    })
+                    .unwrap();
+            }
+        }
+    }
+}
+
 impl Handler<Status> for ClientActor {
     type Result = Result<StatusResponse, String>;
 
@@ -248,6 +314,7 @@ impl ClientActor {
         // This may be slow and we do not want to delay block propagation.
         // We only want to reconcile the txpool against the new block *if* total weight has increased.
         if status == BlockStatus::Next || status == BlockStatus::Reorg {
+            self.composer.reconcile_block(&block, self.sync_status != SyncStatus::StateDone);
             self.tx_pool.reconcile_block(&block);
         }
     }
@@ -364,15 +431,17 @@ impl ClientActor {
         // If we are not producing empty blocks, skip this and call handle scheduling for the next block.
         if !self.config.produce_empty_blocks && self.tx_pool.len() == 0 {
             self.handle_scheduling_block_production(ctx, next_height);
-            return Ok(())
+            return Ok(());
         }
 
         // Take transactions from the pool.
         let transactions = self.tx_pool.prepare_transactions(self.config.block_expected_weight)?;
+        let chunks = self.composer.prepare_chunks();
         let block = Block::produce(
             &prev,
             next_height,
             state_root,
+            chunks,
             transactions,
             self.approvals.drain().collect(),
             block_producer.signer.clone(),
@@ -527,7 +596,10 @@ impl ClientActor {
     }
 
     /// Validate transaction and return transaction information relevant to ordering it in the mempool.
-    fn validate_tx(&mut self, tx: SignedTransaction) -> Result<ValidTransaction, near_chain::Error> {
+    fn validate_tx(
+        &mut self,
+        tx: SignedTransaction,
+    ) -> Result<ValidTransaction, near_chain::Error> {
         let head = self.chain.head()?;
         let state_root = self.chain.get_post_state_root(&head.last_block_hash)?.clone();
         self.runtime_adapter.validate_tx(0, state_root, tx)

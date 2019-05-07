@@ -19,6 +19,7 @@ use near_protos::chain as chain_proto;
 use near_store::StoreUpdate;
 
 use crate::error::Error;
+use near_primitives::sharding::ShardChunkHeader;
 
 /// Number of nano seconds in one second.
 const NS_IN_SECOND: u64 = 1_000_000_000;
@@ -202,13 +203,18 @@ pub struct Bytes(Vec<u8>);
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct Block {
     pub header: BlockHeader,
+    pub chunks: Vec<ShardChunkHeader>,
     pub transactions: Vec<SignedTransaction>,
 }
 
 impl Block {
     /// Returns genesis block for given genesis date and state root.
     pub fn genesis(state_root: MerkleHash, timestamp: DateTime<Utc>) -> Self {
-        Block { header: BlockHeader::genesis(state_root, timestamp), transactions: vec![] }
+        Block {
+            header: BlockHeader::genesis(state_root, timestamp),
+            chunks: vec![],
+            transactions: vec![],
+        }
     }
 
     /// Produces new block from header of previous block, current state root and set of transactions.
@@ -216,6 +222,7 @@ impl Block {
         prev: &BlockHeader,
         height: BlockIndex,
         state_root: MerkleHash,
+        chunks: Vec<ShardChunkHeader>,
         transactions: Vec<SignedTransaction>,
         mut approvals: HashMap<usize, Signature>,
         signer: Arc<EDSigner>,
@@ -242,6 +249,7 @@ impl Block {
                 (prev.total_weight.to_num() + 1).into(),
                 signer,
             ),
+            chunks,
             transactions,
         }
     }
@@ -257,7 +265,9 @@ impl TryFrom<chain_proto::Block> for Block {
     fn try_from(proto: chain_proto::Block) -> Result<Self, Self::Error> {
         let transactions =
             proto.transactions.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
-        Ok(Block { header: proto_to_type(proto.header)?, transactions })
+        let chunks =
+            proto.chunks.into_iter().map(TryInto::try_into).collect::<Result<Vec<_>, _>>()?;
+        Ok(Block { header: proto_to_type(proto.header)?, chunks, transactions })
     }
 }
 
@@ -265,6 +275,7 @@ impl From<Block> for chain_proto::Block {
     fn from(block: Block) -> Self {
         chain_proto::Block {
             header: SingularPtrField::some(block.header.into()),
+            chunks: block.chunks.into_iter().map(std::convert::Into::into).collect(),
             transactions: block.transactions.into_iter().map(std::convert::Into::into).collect(),
             ..Default::default()
         }
@@ -304,7 +315,7 @@ pub type ReceiptResult = HashMap<ShardId, Vec<ReceiptTransaction>>;
 /// Bridge between the chain and the runtime.
 /// Main function is to update state given transactions.
 /// Additionally handles authorities and block weight computation.
-pub trait RuntimeAdapter {
+pub trait RuntimeAdapter: Send + Sync {
     /// Initialize state to genesis state and returns StoreUpdate and state root.
     /// StoreUpdate can be discarded if the chain past the genesis.
     fn genesis_state(&self, shard_id: ShardId) -> (StoreUpdate, MerkleHash);
@@ -332,7 +343,12 @@ pub trait RuntimeAdapter {
     fn account_id_to_shard_id(&self, account_id: &AccountId) -> ShardId;
 
     /// Validate transaction and return transaction information relevant to ordering it in the mempool.
-    fn validate_tx(&self, shard_id: ShardId, state_root: MerkleHash, transaction: SignedTransaction) -> Result<ValidTransaction, Error>;
+    fn validate_tx(
+        &self,
+        shard_id: ShardId,
+        state_root: MerkleHash,
+        transaction: SignedTransaction,
+    ) -> Result<ValidTransaction, Error>;
 
     /// Apply transactions to given state root and return store update and new state root.
     /// Also returns transaction result for each transaction and new receipts.

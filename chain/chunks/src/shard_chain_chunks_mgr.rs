@@ -1,5 +1,5 @@
-use crate::messages::{ChunkHeaderAndPartMsg, ChunkHeaderMsg, ChunkPartMsg};
 use crate::orchestrator::BaseOrchestrator;
+use near_network::types::{ChunkHeaderAndPartMsg, ChunkHeaderMsg, ChunkPartMsg};
 use near_primitives::hash::CryptoHash;
 use near_primitives::sharding::EncodedShardChunk;
 use near_primitives::types::AuthorityId;
@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, RwLock};
 
 const MAX_SHARD_CHUNKS_TO_KEEP_PER_SHARD: usize = 128;
+const MAX_CHUNK_REQUESTS_TO_KEEP_PER_SHARD: usize = 128;
 
 #[derive(Clone, Copy)]
 enum ChunkStatus {
@@ -32,6 +33,9 @@ pub struct ShardChainChunksManager {
 
     fifo: VecDeque<CryptoHash>,
     in_progress: HashSet<CryptoHash>,
+
+    requests_fifo: VecDeque<(CryptoHash, u64, u64)>,
+    requests: HashMap<CryptoHash, HashSet<(u64, u64)>>,
 }
 
 impl ShardChainChunksManager {
@@ -121,7 +125,8 @@ pub fn shard_chain_chunks_exchange_worker(
         }
 
         for (whom, hash, part_id) in chunk_part_request_rx.try_iter() {
-            let mgr = mgr.read().unwrap();
+            let mut mgr = mgr.write().unwrap();
+            let mut served = false;
             if let Some(x) = mgr.chunks.get(&hash) {
                 if (part_id as usize) < x.content.parts.len()
                     && x.content.parts[part_id as usize].is_some()
@@ -134,8 +139,25 @@ pub fn shard_chain_chunks_exchange_worker(
                             part: x.content.parts[part_id as usize].as_ref().unwrap().clone(),
                         },
                     ));
+                    served = true;
                     work_done = true;
                 }
+            }
+            if !served {
+                while mgr.requests_fifo.len() + 1 > MAX_CHUNK_REQUESTS_TO_KEEP_PER_SHARD {
+                    let (r_hash, r_whom, r_part_id) = mgr.requests_fifo.pop_front().unwrap();
+                    mgr.requests.entry(r_hash).and_modify(|v| {
+                        let _ = v.remove(&(r_whom, r_part_id));
+                    });
+                    if mgr.requests[&r_hash].is_empty() {
+                        mgr.requests.remove(&r_hash);
+                    }
+                }
+                mgr.requests
+                    .entry(hash)
+                    .or_insert(HashSet::default())
+                    .insert((whom as u64, part_id));
+                mgr.requests_fifo.push_back((hash, whom as u64, part_id));
             }
         }
 
@@ -173,10 +195,13 @@ pub fn shard_chain_chunks_mgr_worker(
 
     chunk_header_request_tx: Sender<(CryptoHash)>,
     chunk_part_request_tx: Sender<(CryptoHash, u64)>,
+    chunk_part_tx: Sender<(AuthorityId, ChunkPartMsg)>,
 
     chunk_header_rx: Receiver<ChunkHeaderMsg>,
     chunk_part_rx: Receiver<ChunkPartMsg>,
     chunk_header_and_part_rx: Receiver<ChunkHeaderAndPartMsg>,
+
+    candidate_chunk_tx: Sender<(CryptoHash, CryptoHash)>,
 
     terminated: Arc<RwLock<bool>>,
 ) {
@@ -192,7 +217,7 @@ pub fn shard_chain_chunks_mgr_worker(
         {
             let mut mgr = mgr.write().unwrap();
 
-            let ShardChainChunksManager { statuses, in_progress, chunks, .. } = &mut *mgr;
+            let ShardChainChunksManager { statuses, in_progress, chunks, requests, .. } = &mut *mgr;
             let mut in_progress_to_remove = vec![];
 
             for msg in chunk_header_rx.try_iter() {
@@ -211,6 +236,19 @@ pub fn shard_chain_chunks_mgr_worker(
             }
 
             for msg in chunk_header_and_part_rx.try_iter() {
+                let prev_hash = msg.header.prev_chunk_hash;
+                let chunk_hash = msg.chunk_hash;
+
+                if let Some(send_to) = requests.remove(&chunk_hash) {
+                    for (whom, part_id) in send_to {
+                        let _ = chunk_part_tx.send((
+                            whom as AuthorityId,
+                            ChunkPartMsg { chunk_hash, part_id, part: msg.part.clone() },
+                        ));
+                    }
+                    requests.remove(&chunk_hash);
+                }
+
                 chunks.entry(msg.chunk_hash).or_insert(EncodedShardChunk::from_header(
                     msg.header.clone(),
                     orchestrator.read().unwrap().get_total_chunk_parts_num(),
@@ -218,6 +256,9 @@ pub fn shard_chain_chunks_mgr_worker(
                 chunks
                     .get_mut(&msg.chunk_hash)
                     .map(|x| x.content.parts[msg.part_id as usize] = Some(msg.part));
+
+                let _ = candidate_chunk_tx.send((prev_hash, chunk_hash));
+
                 work_done = true;
             }
 

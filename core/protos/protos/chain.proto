@@ -93,7 +93,14 @@ message BlockHeader {
     bytes signature = 2;
 }
 
+message ShardChunkHeader {
+    bytes prev_chunk_hash = 1;
+    bytes encoded_merkle_root = 2;
+    uint64 height = 3;
+}
+
 message Block {
     BlockHeader header = 1;
-    repeated SignedTransaction transactions = 2;
+    repeated ShardChunkHeader chunks = 2;
+    repeated SignedTransaction transactions = 3;
 }
