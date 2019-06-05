@@ -33,6 +33,20 @@ cached_key! {
     fn compile_cached_module(code: &ContractCode, config: &Config) -> Result<wasmer_runtime::Module, Error> = {
         let prepared_code = prepare::prepare_contract(code, config).map_err(Error::Prepare)?;
 
+        // Metering compilation
+        // use wasmer_runtime_core::codegen::{MiddlewareChain, StreamingCompiler};
+        // use wasmer_singlepass_backend::ModuleCodeGenerator as SinglePassMCG;
+        // use wasmer_middleware_common::metering::Metering;
+        // let limit = 1_000_000;
+        // let c: StreamingCompiler<SinglePassMCG, _, _, _, _> = StreamingCompiler::new(move || {
+        //     let mut chain = MiddlewareChain::new();
+        //     chain.push(Metering::new(limit));
+        //     chain
+        // });            
+        // wasmer_runtime_core::compile_with(&prepared_code, &c)
+        // .map_err(|e| Error::Wasmer(format!("{}", e)))
+
+        // Normal compilation
         wasmer_runtime::compile(&prepared_code)
             .map_err(|e| Error::Wasmer(format!("{}", e)))
     }

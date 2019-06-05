@@ -183,7 +183,7 @@ pub fn prepare_contract(
     let mut contract_module = ContractModule::init(original_code.get_code(), config)?;
     contract_module.standardize_mem();
     contract_module.ensure_no_internal_memory()?;
-    contract_module.inject_gas_metering()?;
+    //contract_module.inject_gas_metering()?;
     contract_module.inject_stack_height_metering()?;
 
     if let Some(memory_type) = contract_module.scan_imports()? {
